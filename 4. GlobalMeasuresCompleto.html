@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Visor de Redes — Núcleo/Periferia + k-core + Camino más corto</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #0f172a;
+      --muted: #64748b;
+      --accent: #2563eb;
+      --panel: #f8fafc;
+      --border: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; color: var(--fg); background: var(--bg); }
+    .app { display: flex; height: 100vh; width: 100vw; }
+    aside#sidebar {
+      width: 400px; min-width: 300px; max-width: 520px;
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      padding: 12px 14px;
+      overflow: auto;
+    }
+    main#graph { flex: 1; display: flex; }
+    #cy { flex: 1; height: 100%; width: 100%; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    .badge { background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .stat { font-size: 12px; color: var(--muted); margin-right: 8px; }
+    .section { background: #ffffff; border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 12px; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    label { font-size: 13px; color: var(--muted); }
+    select, input[type="file"], button, input[type="range"], input[type="number"] {
+      border: 1px solid var(--border); background: white; padding: 8px 10px; border-radius: 10px; font-size: 14px;
+    }
+    input[type="range"] { padding: 0; height: 28px; width: 100%; }
+    button.primary { background: var(--accent); color: white; border: none; }
+    .ctrl { display:flex; align-items:center; gap:8px; }
+    .ctrl small { color: var(--muted); }
+    details { background: #ffffff; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+    summary { cursor: pointer; font-weight: 600; }
+    code { background: #f1f5f9; padding: 1px 4px; border-radius: 6px; }
+    .pill { background: #fff1f2; color: #9f1239; border: 1px solid #fecdd3; padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+    .hint { color: var(--muted); font-size: 12px; }
+  </style>
+
+  <!-- Cytoscape.js core -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+  <!-- Layout extensions -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/webcola/3.4.0/cola.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape-cola/2.5.0/cytoscape-cola.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape-cose-bilkent/4.1.0/cytoscape-cose-bilkent.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape-fcose/2.2.0/cytoscape-fcose.min.js"></script>
+  <!-- GraphML importer for Cytoscape -->
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-graphml@1.0.4/cytoscape-graphml.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside id="sidebar">
+      <div class="section">
+        <h1>Visor de Redes</h1>
+        <div class="row">
+          <span class="badge" id="layout-badge">layout: cose</span>
+          <span class="stat" id="nn">nodos: 0</span>
+          <span class="stat" id="ne">enlaces: 0</span>
+          <span class="stat" id="dir">tipo: —</span>
+        </div>
+      </div>
+
+      <div class="section">
+        <label for="file" style="width:100%">Cargar archivo (.graphml o .gml)</label>
+        <input id="file" type="file" accept=".graphml,.gml,.xml" style="width:100%"/>
+      </div>
+
+      <div class="section">
+        <div class="row">
+          <label for="layout" style="width:100%">Algoritmo de visualización:</label>
+          <select id="layout" style="width:100%">
+            <option value="random">random</option>
+            <option value="circle">circle</option>
+            <option value="grid">grid</option>
+            <option value="concentric">concentric</option>
+            <option value="breadthfirst">breadthfirst</option>
+            <option value="cose" selected>cose (fuerza)</option>
+            <option value="fcose">fcose (fuerza rápida)</option>
+            <option value="cola">cola (WebCola)</option>
+            <option value="cose-bilkent">cose-bilkent</option>
+          </select>
+          <button class="primary" id="run" style="width:100%">Aplicar layout</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="ctrl" style="width:100%">
+            <input id="labels" type="checkbox" checked />
+            Mostrar nombres
+          </label>
+          <label class="ctrl" title="Muestra ε (excentricidad) en etiquetas, independiente de los nombres" style="width:100%">
+            <input id="toggleEcc" type="checkbox" />
+            Mostrar excentricidad (ε)
+          </label>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="fit" style="flex:1">Ajustar vista</button>
+          <button id="sample" style="flex:1">Cargar ejemplo</button>
+          <button id="savePNG" style="flex:1">Guardar PNG</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <label class="ctrl" style="width:100%"><input id="treatUndirected" type="checkbox" checked /> Tratar como NO dirigida</label>
+        <div class="row" style="margin-top:8px">
+          <button class="primary" id="diam" style="flex:1">Calcular diámetro</button>
+          <button id="toggleDiam" style="flex:1">Mostrar/Ocultar diámetro</button>
+          <button id="clearDiam" style="flex:1">Limpiar diámetro</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="radiusShow" style="flex:1">Visualizar radio</button>
+          <button id="toggleRadius" style="flex:1">Mostrar/Ocultar radio</button>
+          <button id="clearRadius" style="flex:1">Limpiar radio</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="row">
+          <button id="calcCorePeriphery" style="flex:1">Calcular núcleo-periferia</button>
+          <button id="toggleCorePeriphery" style="flex:1">Mostrar/Ocultar núcleo-periferia</button>
+          <button id="clearCorePeriphery" style="flex:1">Limpiar núcleo-periferia</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="row">
+          <label for="kcoreK" class="ctrl" style="width:100%">
+            <span style="flex:1">k-core (k):</span>
+            <input id="kcoreK" type="number" min="1" value="2" style="width:90px"/>
+          </label>
+          <button id="showKcore" style="flex:1">Mostrar k-core</button>
+          <button id="clearKcore" style="flex:1">Limpiar k-core</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="row">
+          <button id="spMode" style="flex:1">Modo: camino más corto</button>
+          <button id="toggleSP" style="flex:1">Mostrar/Ocultar camino</button>
+          <button id="clearSP" style="flex:1">Limpiar camino</button>
+        </div>
+        <div id="spStatus" class="hint" style="margin-top:6px;">Selecciona dos nodos para el camino más corto.</div>
+      </div>
+
+      <div class="section">
+        <div class="ctrl" style="width:100%">
+          <label for="nodeSize" style="flex:1">Tamaño de nodos</label>
+          <small id="nodeSizeVal" style="width:70px;text-align:right">18 px</small>
+        </div>
+        <input id="nodeSize" type="range" min="8" max="60" value="18" />
+        <div class="ctrl" style="width:100%; margin-top:8px">
+          <label for="edgeWidth" style="flex:1">Grosor de enlaces</label>
+          <small id="edgeWidthVal" style="width:70px;text-align:right">1.5 px</small>
+        </div>
+        <input id="edgeWidth" type="range" min="1" max="10" value="1.5" step="0.5" />
+      </div>
+
+      <details class="section" open>
+        <summary>Resultado: diámetro, radio, ε, centro, núcleo-periferia, k-core</summary>
+        <div id="diam-info" class="hint">—</div>
+      </details>
+    </aside>
+
+    <main id="graph">
+      <div id="cy"></div>
+    </main>
+  </div>
+
+  <script>
+    if (window.cytoscape && window.cytoscapeGraphML) { window.cytoscape.use(window.cytoscapeGraphML); }
+    if (window.cytoscape && window.cytoscapeCola) { window.cytoscape.use(window.cytoscapeCola); }
+    if (window.cytoscape && window.cytoscapeCoseBilkent) { window.cytoscape.use(window.cytoscapeCoseBilkent); }
+    if (window.cytoscape && window.fcose) { window.cytoscape.use(window.fcose); }
+
+    const cy = cytoscape({
+      container: document.getElementById('cy'),
+      elements: [],
+      style: [
+        { selector: 'node', style: {
+            'background-color': '#1d4ed8',
+            'label': 'data(_label_render)',
+            'font-size': 10,
+            'color': '#0f172a',
+            'text-outline-color': '#ffffff',
+            'text-outline-width': 2,
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'width': 18, 'height': 18
+        }},
+        { selector: 'edge', style: {
+            'line-color': '#cbd5e1',
+            'width': 1.5,
+            'target-arrow-shape': 'none',
+            'curve-style': 'straight'
+        }},
+        /* Diámetro */
+        { selector: '.diam-node', style: { 'background-color': '#f97316', 'width': 28, 'height': 28 } },
+        { selector: '.diam-edge', style: { 'line-color': '#fb923c', 'width': 5 } },
+        /* Radio */
+        { selector: '.radius-node', style: { 'background-color': '#10b981', 'width': 26, 'height': 26 } },
+        { selector: '.radius-edge', style: { 'line-color': '#34d399', 'width': 4 } },
+        /* Núcleo-Periferia */
+        { selector: '.core-node', style: { 'background-color': '#fde047', 'width': 26, 'height': 26 } },   /* amarillo núcleo */
+        { selector: '.periphery-node', style: { 'background-color': '#ef4444', 'width': 24, 'height': 24 } }, /* rojo periferia */
+        /* k-core en naranja */
+        { selector: '.kcore-node', style: { 'background-color': '#f59e0b', 'width': 26, 'height': 26, 'border-width': 2, 'border-color': '#78350f' } },
+        /* Shortest Path (camino más corto) en naranja también */
+        { selector: '.sp-node', style: { 'background-color': '#fb923c', 'width': 28, 'height': 28, 'border-width': 2, 'border-color': '#b45309' } },
+        { selector: '.sp-edge', style: { 'line-color': '#fb923c', 'width': 5 } },
+        { selector: ':selected', style: { 'border-width': 3, 'border-color': '#0ea5e9' } }
+      ],
+      layout: { name: 'cose', animate: 'end', nodeOverlap: 10, idealEdgeLength: 80 },
+      wheelSensitivity: 0.2
+    });
+
+    // Estado
+    let lastDiameterPath = [];
+    let diameterVisible = false;
+    let lastRadiusPath = [];
+    let radiusVisible = false;
+    let corePeripheryVisible = false;
+    let isDirected = false;
+    let lastMetrics = null;
+    let lastKcore = { k: null, nodes: [] };
+
+    // Camino más corto
+    let spMode = false;
+    let spVisible = false;
+    let spPair = [];
+    let lastSPPath = [];
+
+    // Helpers UI
+    const elsCount = () => {
+      document.getElementById('nn').textContent = 'nodos: ' + cy.nodes().length;
+      document.getElementById('ne').textContent = 'enlaces: ' + cy.edges().length;
+    };
+    const setLayoutBadge = (name) => document.getElementById('layout-badge').textContent = 'layout: ' + name;
+
+    function runLayout(name) {
+      setLayoutBadge(name);
+      let opts = { name };
+      if (name === 'concentric') { opts = { name, levelWidth: nodes => 10 }; }
+      if (name === 'breadthfirst') { opts = { name, directed: false, circle: false }; }
+      if (name === 'cola') { opts = { name, maxSimulationTime: 2000, nodeSpacing: 12, edgeLength: 60, animate: true }; }
+      if (name === 'cose') { opts = { name, animate: 'end', nodeOverlap: 10, idealEdgeLength: 80 }; }
+      if (name === 'cose-bilkent') { opts = { name, animate: 'end' }; }
+      if (name === 'fcose') { opts = { name, animate: true, randomize: true, fit: true }; }
+      cy.layout(opts).run();
+      cy.fit();
+    }
+
+    // Etiquetas: independencia entre nombres y ε
+    const namesToggle = document.getElementById('labels');
+    const eccToggle = document.getElementById('toggleEcc');
+    function recomputeLabels() {
+      const showNames = namesToggle.checked;
+      const showEcc = eccToggle.checked;
+      cy.nodes().forEach(n => {
+        const base = n.data('label') ?? n.id();
+        const ecc = n.data('_ecc');
+        let text = '';
+        if (showNames && showEcc && ecc != null) text = `${base} (ε=${ecc})`;
+        else if (showNames && !showEcc) text = base;
+        else if (!showNames && showEcc && ecc != null) text = `ε=${ecc}`;
+        else text = '';
+        n.data('_label_render', text);
+      });
+    }
+    namesToggle.addEventListener('change', recomputeLabels);
+    eccToggle.addEventListener('change', () => {
+      if (!lastMetrics && eccToggle.checked) {
+        alert('Primero calcula las métricas (botón "Calcular diámetro") para obtener ε.');
+        eccToggle.checked = false;
+      }
+      recomputeLabels();
+    });
+
+    document.getElementById('run').addEventListener('click', () => runLayout(document.getElementById('layout').value));
+    document.getElementById('fit').addEventListener('click', () => cy.fit());
+    document.getElementById('savePNG').addEventListener('click', () => {
+      const png = cy.png({ full: false, scale: 2, bg: '#ffffff' });
+      const a = document.createElement('a'); a.href = png; a.download = 'red.png'; a.click();
+    });
+
+    // Sliders tamaño
+    const nodeSize = document.getElementById('nodeSize');
+    const edgeWidth = document.getElementById('edgeWidth');
+    const nodeSizeVal = document.getElementById('nodeSizeVal');
+    const edgeWidthVal = document.getElementById('edgeWidthVal');
+    function applySizes() {
+      const n = parseFloat(nodeSize.value); const e = parseFloat(edgeWidth.value);
+      nodeSizeVal.textContent = n + ' px'; edgeWidthVal.textContent = e + ' px';
+      cy.style().selector('node').style({ width: n, height: n }).selector('edge').style('width', e).update();
+    }
+    nodeSize.addEventListener('input', applySizes);
+    edgeWidth.addEventListener('input', applySizes);
+
+    // Carga de ejemplo
+    document.getElementById('sample').addEventListener('click', () => {
+      const karate = createKarate();
+      cy.elements().remove();
+      cy.add(karate.elements);
+      setDirected(false);
+      elsCount();
+      runLayout('cose'); // por defecto COSE
+      resetAllHighlightsAndMetrics();
+      lastSPPath = []; spPair = []; spVisible = false; spMode = false;
+      document.getElementById('spStatus').textContent = 'Selecciona dos nodos para el camino más corto.';
+      // Etiquetas iniciales
+      cy.nodes().forEach(n => { if (n.data('label') == null) n.data('label', n.id()); n.data('_ecc', null); });
+      recomputeLabels();
+      applySizes();
+    });
+
+    // Carga de archivo
+    document.getElementById('file').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const name = file.name.toLowerCase();
+      const text = await file.text();
+      try {
+        let elements = []; let directed = false;
+        if (name.endsWith('.graphml') || name.endsWith('.xml')) {
+          const parsed = parseGraphML(text); elements = parsed.elements; directed = parsed.directed;
+        } else if (name.endsWith('.gml')) {
+          const parsed = parseGML(text); elements = parsed.elements; directed = parsed.directed;
+        } else { alert('Formato no soportado: ' + file.name); return; }
+        cy.elements().remove(); cy.add(elements);
+        cy.nodes().forEach(n => { if (n.data('label') == null) n.data('label', n.id()); n.data('_ecc', null); n.data('_label_render',''); });
+        setDirected(directed);
+        elsCount();
+        runLayout('cose'); // por defecto COSE al cargar
+        resetAllHighlightsAndMetrics();
+        lastSPPath = []; spPair = []; spVisible = false; spMode = false;
+        document.getElementById('spStatus').textContent = 'Selecciona dos nodos para el camino más corto.';
+        recomputeLabels();
+        applySizes();
+      } catch (err) { console.error(err); alert('Error al cargar el archivo: ' + err.message); }
+    });
+
+    // Parsers
+    function parseGraphML(xmlText) {
+      if (cy.graphml) {
+        const tmp = cytoscape(); tmp.graphml({ layoutBy: false, nodeLabels: true, edgeLabels: false }).load(xmlText);
+        const edgedef = (new DOMParser()).parseFromString(xmlText, 'application/xml').querySelector('graph')?.getAttribute('edgedefault') || 'undirected';
+        const directed = String(edgedef).toLowerCase() === 'directed';
+        const elements = tmp.elements().jsons(); tmp.destroy();
+        return { elements, directed };
+      }
+      const parser = new DOMParser(); const doc = parser.parseFromString(xmlText, 'application/xml'); const graph = doc.querySelector('graph');
+      if (!graph) throw new Error('GraphML inválido: no se encontró <graph>');
+      const edgedef = graph.getAttribute('edgedefault') || 'undirected'; const directed = edgedef.toLowerCase() === 'directed';
+      const keyMap = new Map(); doc.querySelectorAll('key').forEach(k => keyMap.set(k.getAttribute('id'), { attr: k.getAttribute('attr.name'), for: k.getAttribute('for') }));
+      const el = []; const idSet = new Set();
+      graph.querySelectorAll('node').forEach(n => {
+        const nid = n.getAttribute('id'); let label = nid;
+        n.querySelectorAll('data').forEach(d => { const meta = keyMap.get(d.getAttribute('key')) || {}; const name = (meta.attr || '').toLowerCase(); if (name === 'label' || name === 'name') label = d.textContent.trim() || label; });
+        idSet.add(nid); el.push({ data: { id: nid, label } });
+      });
+      let i = 0; graph.querySelectorAll('edge').forEach(e => { const s = e.getAttribute('source'), t = e.getAttribute('target'); if (!idSet.has(s) || !idSet.has(t)) return; el.push({ data: { id: 'e'+(i++), source: s, target: t } }); });
+      return { elements: el, directed };
+    }
+
+    function parseGML(text) {
+      let directed = false; const dirM = /directed\s+([01])/i.exec(text); if (dirM) directed = dirM[1] === '1';
+      const nodeRegex = /node\s*\[\s*([\s\S]*?)\]/gi; const edgeRegex = /edge\s*\[\s*([\s\S]*?)\]/gi;
+      const getField = (block, key) => { const re = new RegExp('(?:^|\\s)' + key + '\\s+(\"[^\"]*\"|[^\\s\\]]+)', 'i'); const m = block.match(re); if (!m) return undefined; let v = m[1].trim(); if (v.startsWith('\"') && v.endsWith('\"')) v = v.slice(1, -1); return v; };
+      const elements = []; const idSeen = new Set(); let m;
+      while ((m = nodeRegex.exec(text)) !== null) { const block = m[1]; let id = getField(block, 'id'); if (id === undefined) id = getField(block, 'label') || ('n' + Math.random().toString(36).slice(2, 8)); const label = getField(block, 'label') || String(id); if (!idSeen.has(String(id))) { idSeen.add(String(id)); elements.push({ data: { id: String(id), label: String(label) } }); } }
+      let i = 0; while ((m = edgeRegex.exec(text)) !== null) { const block = m[1]; const s = getField(block, 'source'); const t = getField(block, 'target'); if (s == null || t == null) continue; elements.push({ data: { id: 'e'+(i++), source: String(s), target: String(t) } }); }
+      if (!elements.length) throw new Error('No se detectaron nodos/aristas en el GML. Verifica el formato.');
+      return { elements, directed };
+    }
+
+    // Métricas y estructuras
+    function setDirected(flag) {
+      isDirected = !!flag;
+      document.getElementById('dir').textContent = 'tipo: ' + (isDirected ? 'dirigido' : 'no dirigido');
+      cy.style().selector('edge').style('target-arrow-shape', isDirected ? 'triangle' : 'none').update();
+    }
+
+    function clearDiameterHighlight() {
+      cy.nodes().removeClass('diam-node');
+      cy.edges().removeClass('diam-edge');
+      lastDiameterPath = []; diameterVisible = false;
+    }
+    function clearRadiusHighlight() {
+      cy.nodes().removeClass('radius-node');
+      cy.edges().removeClass('radius-edge');
+      lastRadiusPath = []; radiusVisible = false;
+    }
+    function clearCorePeriphery() {
+      cy.nodes().removeClass('core-node periphery-node'); corePeripheryVisible = false;
+    }
+    function clearKcore() {
+      cy.nodes().removeClass('kcore-node'); lastKcore = { k: null, nodes: [] };
+    }
+
+    function resetAllHighlightsAndMetrics() {
+      clearDiameterHighlight(); clearRadiusHighlight(); clearCorePeriphery(); clearKcore(); clearSP();
+      lastMetrics = null;
+      document.getElementById('diam-info').textContent = '—';
+      eccToggle.checked = false;
+      cy.nodes().forEach(n => { n.data('_ecc', null); n.data('_label_render', namesToggle.checked ? (n.data('label') ?? n.id()) : ''); });
+    }
+
+    function setDiameterVisibility(visible) {
+      diameterVisible = visible;
+      cy.nodes('.diam-node').removeClass('diam-node'); cy.edges('.diam-edge').removeClass('diam-edge');
+      if (!lastDiameterPath.length || !visible) return;
+      lastDiameterPath.forEach(id => cy.getElementById(id).addClass('diam-node'));
+      for (let i = 0; i < lastDiameterPath.length - 1; i++) {
+        const a = lastDiameterPath[i], b = lastDiameterPath[i+1];
+        cy.getElementById(a).connectedEdges().filter(e => (e.data('source') === a && e.data('target') === b) || (e.data('source') === b && e.data('target') === a)).addClass('diam-edge');
+      }
+    }
+
+    function setRadiusVisibility(visible) {
+      radiusVisible = visible;
+      cy.nodes('.radius-node').removeClass('radius-node'); cy.edges('.radius-edge').removeClass('radius-edge');
+      if (!lastRadiusPath.length || !visible) return;
+      lastRadiusPath.forEach(id => cy.getElementById(id).addClass('radius-node'));
+      for (let i = 0; i < lastRadiusPath.length - 1; i++) {
+        const a = lastRadiusPath[i], b = lastRadiusPath[i+1];
+        cy.getElementById(a).connectedEdges().filter(e => (e.data('source') === a && e.data('target') === b) || (e.data('source') === b && e.data('target') === a)).addClass('radius-edge');
+      }
+    }
+
+    function buildNeighbors(treatUndirected) {
+      const neighbors = new Map();
+      cy.nodes().forEach(n => neighbors.set(n.id(), new Set()));
+      cy.edges().forEach(e => {
+        const s = e.data('source'), t = e.data('target');
+        neighbors.get(s)?.add(t);
+        if (treatUndirected) neighbors.get(t)?.add(s);
+      });
+      return neighbors;
+    }
+
+    function bfsFrom(startId, neighbors) {
+      const dist = new Map(); const parent = new Map(); const q = [];
+      dist.set(startId, 0); q.push(startId);
+      while (q.length) {
+        const u = q.shift();
+        for (const v of (neighbors.get(u) || [])) {
+          if (!dist.has(v)) { dist.set(v, dist.get(u) + 1); parent.set(v, u); q.push(v); }
+        }
+      }
+      return { dist, parent };
+    }
+
+    function components(neighbors) {
+      const seen = new Set(); const comps = [];
+      for (const id of neighbors.keys()) {
+        if (seen.has(id)) continue; const comp = []; const q = [id]; seen.add(id);
+        while (q.length) {
+          const u = q.shift(); comp.push(u);
+          for (const v of neighbors.get(u) || []) { if (!seen.has(v)) { seen.add(v); q.push(v); } }
+        }
+        comps.push(comp);
+      }
+      return comps;
+    }
+
+    function computeDiameterAndMetrics(treatUndirected=true) {
+      const nCount = cy.nodes().length; if (nCount === 0) throw new Error('No hay nodos cargados.');
+      const neighbors = buildNeighbors(treatUndirected);
+      const comps = components(neighbors);
+      let best = { diameter: -1, path: [], component: [], ecc: new Map(), radius: -1, centers: [] };
+
+      for (const comp of comps) {
+        const start = comp[0];
+        const b1 = bfsFrom(start, neighbors);
+        let far = start; for (const v of comp) { if (b1.dist.has(v) && b1.dist.get(v) > (b1.dist.get(far) ?? -1)) far = v; }
+        const b2 = bfsFrom(far, neighbors);
+        let far2 = far; for (const v of comp) { if (b2.dist.has(v) && b2.dist.get(v) > (b2.dist.get(far2) ?? -1)) far2 = v; }
+        const diamHere = b2.dist.get(far2) ?? -1;
+
+        // Excentricidades
+        const ecc = new Map();
+        for (const u of comp) {
+          const bu = bfsFrom(u, neighbors);
+          let maxd = 0; for (const w of comp) { const d = bu.dist.get(w); if (d != null && d > maxd) maxd = d; }
+          ecc.set(u, maxd);
+        }
+        let radius = Infinity; for (const u of comp) radius = Math.min(radius, ecc.get(u));
+        const centers = comp.filter(u => ecc.get(u) === radius);
+
+        if (diamHere > best.diameter) {
+          const path = []; let cur = far2;
+          while (cur != null) { path.push(cur); cur = b2.parent.get(cur); if (cur === undefined) cur = null; }
+          best = { diameter: diamHere, path: path.reverse(), component: comp.slice(), ecc, radius, centers };
+        }
+      }
+      return best;
+    }
+
+    // k-core
+    function computeKcore(k, treatUndirected) {
+      if (k <= 0) return Array.from(cy.nodes(), n => n.id());
+      const neighbors = buildNeighbors(treatUndirected);
+      const deg = new Map(); for (const [u, set] of neighbors) deg.set(u, set.size);
+      const inCore = new Map(); for (const u of neighbors.keys()) inCore.set(u, true);
+      const queue = [];
+      for (const [u, d] of deg) if (d < k) queue.push(u);
+      while (queue.length) {
+        const u = queue.shift(); if (!inCore.get(u)) continue;
+        inCore.set(u, false);
+        for (const v of neighbors.get(u) || []) {
+          if (!inCore.get(v)) continue;
+          deg.set(v, deg.get(v) - 1);
+          if (deg.get(v) < k) queue.push(v);
+        }
+      }
+      const coreNodes = []; for (const [u, keep] of inCore) if (keep) coreNodes.push(u);
+      return coreNodes;
+    }
+
+    function highlightPathToFarthest(sourceId, neighbors, classNode, classEdge) {
+      const b = bfsFrom(sourceId, neighbors);
+      let far = sourceId;
+      for (const v of neighbors.keys()) {
+        if (b.dist.has(v) && b.dist.get(v) > (b.dist.get(far) ?? -1)) far = v;
+      }
+      const path = []; let cur = far;
+      while (cur != null) { path.push(cur); cur = b.parent.get(cur); if (cur === undefined) cur = null; }
+      path.reverse();
+      cy.nodes('.' + classNode).removeClass(classNode);
+      cy.edges('.' + classEdge).removeClass(classEdge);
+      for (let i=0;i<path.length;i++) cy.getElementById(path[i]).addClass(classNode);
+      for (let i=0;i<path.length-1;i++) {
+        const a = path[i], b2 = path[i+1];
+        cy.getElementById(a).connectedEdges().filter(e => (e.data('source')===a && e.data('target')===b2) || (e.data('source')===b2 && e.data('target')===a)).addClass(classEdge);
+      }
+      return path;
+    }
+
+    // ---------- Camino más corto entre dos nodos ----------
+    function clearSP() {
+      cy.nodes().removeClass('sp-node'); cy.edges().removeClass('sp-edge');
+      lastSPPath = []; spVisible = false; spPair = [];
+    }
+    function setSPVisible(visible) {
+      spVisible = visible;
+      cy.nodes('.sp-node').removeClass('sp-node'); cy.edges('.sp-edge').removeClass('sp-edge');
+      if (!lastSPPath.length || !visible) return;
+      for (let i=0;i<lastSPPath.length;i++) cy.getElementById(lastSPPath[i]).addClass('sp-node');
+      for (let i=0;i<lastSPPath.length-1;i++) {
+        const a = lastSPPath[i], b = lastSPPath[i+1];
+        cy.getElementById(a).connectedEdges().filter(e => (e.data('source')===a && e.data('target')===b) || (e.data('source')===b && e.data('target')===a)).addClass('sp-edge');
+      }
+    }
+    function neighborsForSP() {
+      return buildNeighbors(document.getElementById('treatUndirected').checked);
+    }
+    function shortestPath(a, b, neighbors) {
+      if (a === b) return [a];
+      const prev = new Map(); const q = [a]; const seen = new Set([a]);
+      while (q.length) {
+        const u = q.shift();
+        for (const v of (neighbors.get(u) || [])) {
+          if (seen.has(v)) continue;
+          seen.add(v); prev.set(v, u); q.push(v);
+          if (v === b) {
+            const path = [b]; let cur = b;
+            while (prev.has(cur)) { cur = prev.get(cur); path.push(cur); }
+            return path.reverse();
+          }
+        }
+      }
+      return []; // no path
+    }
+
+    document.getElementById('spMode').addEventListener('click', () => {
+      spMode = !spMode;
+      document.getElementById('spMode').textContent = spMode ? 'Modo: camino (activo)' : 'Modo: camino más corto';
+      document.getElementById('spStatus').textContent = spMode ? 'Haz clic en dos nodos para calcular el camino más corto.' : 'Selecciona dos nodos para el camino más corto.';
+      if (!spMode) spPair = [];
+    });
+
+    cy.on('tap', 'node', (evt) => {
+      if (!spMode) return;
+      const id = evt.target.id();
+      if (spPair.length === 0) {
+        spPair = [id];
+        document.getElementById('spStatus').textContent = `Nodo origen: ${id}. Ahora selecciona el destino.`;
+      } else if (spPair.length === 1) {
+        if (id === spPair[0]) { document.getElementById('spStatus').textContent = 'Selecciona un nodo distinto como destino.'; return; }
+        spPair.push(id);
+        const [a,b] = spPair;
+        const N = neighborsForSP();
+        const path = shortestPath(a, b, N);
+        if (!path.length) {
+          document.getElementById('spStatus').textContent = `No hay camino entre ${a} y ${b} (en el modo seleccionado).`;
+          spPair = [];
+          return;
+        }
+        lastSPPath = path.slice();
+        setSPVisible(true);
+        cy.fit(cy.elements('.sp-node, .sp-edge'), 60);
+        document.getElementById('spStatus').textContent = `Camino más corto ${a} → ${b}: ${path.join(' → ')}`;
+        spPair = []; // reset to allow nueva selección
+      }
+    });
+
+    document.getElementById('toggleSP').addEventListener('click', () => {
+      if (!lastSPPath.length) { alert('Primero seleccione dos nodos en el Modo camino.'); return; }
+      setSPVisible(!spVisible);
+      if (spVisible) cy.fit(cy.elements('.sp-node, .sp-edge'), 60);
+    });
+    document.getElementById('clearSP').addEventListener('click', () => { clearSP(); document.getElementById('spStatus').textContent = 'Selecciona dos nodos para el camino más corto.'; });
+
+    // Diámetro
+    document.getElementById('diam').addEventListener('click', () => {
+      try {
+        const treatUndir = document.getElementById('treatUndirected').checked;
+        clearDiameterHighlight();
+        const res = computeDiameterAndMetrics(treatUndir);
+        lastMetrics = res;
+        cy.nodes().forEach(n => { const id = n.id(); const eps = res.ecc.get(id); n.data('_ecc', eps != null ? eps : null); });
+        const info = document.getElementById('diam-info');
+        const centerStr = res.centers.slice(0, 12).map(x => '<code>'+x+'</code>').join(', ') + (res.centers.length > 12 ? ', …' : '');
+        info.innerHTML = `
+          <div><strong>Diámetro</strong>: ${res.diameter}</div>
+          <div><strong>Radio</strong>: ${res.radius}</div>
+          <div><strong>N° nodos en el componente</strong>: ${res.component.length}</div>
+          <div><strong>Centro</strong>: ${centerStr || '—'}</div>
+          <div><strong>Camino (diámetro)</strong>: ${res.path.map(x => '<code>'+x+'</code>').join(' → ')}</div>
+        `;
+        recomputeLabels(); // ahora independiente de nombres
+        lastDiameterPath = res.path.slice(); setDiameterVisibility(true); cy.fit(cy.elements('.diam-node, .diam-edge'), 60);
+      } catch (err) { document.getElementById('diam-info').innerHTML = '<span class="pill">Error: ' + err.message + '</span>'; console.error(err); }
+    });
+    document.getElementById('toggleDiam').addEventListener('click', () => {
+      if (!lastDiameterPath.length) { alert('Primero calcula el diámetro.'); return; }
+      setDiameterVisibility(!diameterVisible); if (diameterVisible) cy.fit(cy.elements('.diam-node, .diam-edge'), 60);
+    });
+    document.getElementById('clearDiam').addEventListener('click', clearDiameterHighlight);
+
+    // Radio
+    document.getElementById('radiusShow').addEventListener('click', () => {
+      try {
+        if (!lastMetrics) { alert('Primero calcula el diámetro para obtener el radio y centros.'); return; }
+        clearRadiusHighlight();
+        const treatUndir = document.getElementById('treatUndirected').checked;
+        const neighbors = buildNeighbors(treatUndir);
+        const centers = lastMetrics.centers.slice().sort();
+        const center = centers.length ? centers[0] : lastMetrics.component[0];
+        lastRadiusPath = highlightPathToFarthest(center, neighbors, 'radius-node', 'radius-edge');
+        setRadiusVisibility(true);
+        cy.fit(cy.elements('.radius-node, .radius-edge'), 60);
+      } catch (err) { alert('Error al visualizar radio: ' + err.message); console.error(err); }
+    });
+    document.getElementById('toggleRadius').addEventListener('click', () => {
+      if (!lastRadiusPath.length) { alert('Primero usa "Visualizar radio".'); return; }
+      setRadiusVisibility(!radiusVisible); if (radiusVisible) cy.fit(cy.elements('.radius-node, .radius-edge'), 60);
+    });
+    document.getElementById('clearRadius').addEventListener('click', clearRadiusHighlight);
+
+    // Núcleo-Periferia
+    document.getElementById('calcCorePeriphery').addEventListener('click', () => {
+      if (!lastMetrics) { alert('Primero calcula el diámetro.'); return; }
+      clearCorePeriphery();
+      const R = lastMetrics.radius;
+      const D = lastMetrics.diameter;
+      const core = []; const periphery = [];
+      cy.nodes().forEach(n => {
+        const e = n.data('_ecc');
+        if (e == null) return;
+        if (e === R) { n.addClass('core-node'); core.push(n.id()); }
+        else if (e === D) { n.addClass('periphery-node'); periphery.push(n.id()); }
+      });
+      corePeripheryVisible = true;
+      const info = document.getElementById('diam-info');
+      const add = document.createElement('div');
+      add.innerHTML = `<div style="margin-top:6px"><strong>Núcleo</strong> (ε=radio): ${core.map(x=>'<code>'+x+'</code>').join(', ') || '—'}<br>
+      <strong>Periferia</strong> (ε=diámetro): ${periphery.map(x=>'<code>'+x+'</code>').join(', ') || '—'}</div>`;
+      info.appendChild(add);
+    });
+    document.getElementById('toggleCorePeriphery').addEventListener('click', () => {
+      if (!lastMetrics) { alert('Primero calcula el diámetro.'); return; }
+      corePeripheryVisible = !corePeripheryVisible;
+      cy.nodes().removeClass('core-node periphery-node');
+      if (corePeripheryVisible) {
+        const R = lastMetrics.radius, D = lastMetrics.diameter;
+        cy.nodes().forEach(n => {
+          const e = n.data('_ecc');
+          if (e == null) return;
+          if (e === R) n.addClass('core-node');
+          else if (e === D) n.addClass('periphery-node');
+        });
+      }
+    });
+    document.getElementById('clearCorePeriphery').addEventListener('click', clearCorePeriphery);
+
+    // k-core (naranja)
+    document.getElementById('showKcore').addEventListener('click', () => {
+      try {
+        const k = Math.max(1, parseInt(document.getElementById('kcoreK').value || '2', 10));
+        const treatUndir = document.getElementById('treatUndirected').checked;
+        clearKcore();
+        const coreNodes = computeKcore(k, treatUndir);
+        if (!coreNodes.length) { alert('k-core vacío para k = ' + k); return; }
+        coreNodes.forEach(id => cy.getElementById(id).addClass('kcore-node'));
+        lastKcore = { k, nodes: coreNodes.slice() };
+        const info = document.getElementById('diam-info');
+        const add = document.createElement('div');
+        add.innerHTML = `<div style="margin-top:6px"><strong>k-core</strong> (k=${k}) — |V|=${coreNodes.length}: ${coreNodes.slice(0,50).map(x=>'<code>'+x+'</code>').join(', ')}${coreNodes.length>50?', …':''}</div>`;
+        info.appendChild(add);
+      } catch (err) { alert('Error al calcular k-core: ' + err.message); console.error(err); }
+    });
+    document.getElementById('clearKcore').addEventListener('click', clearKcore);
+
+    // Utilidades varias
+    function createKarate() {
+      const nodes = [];
+      for (let i = 1; i <= 34; i++) nodes.push({ data: { id: String(i), label: String(i), _label_render: String(i), _ecc: null } });
+      const edgesList = [
+        [1,2],[1,3],[1,4],[1,5],[1,6],[1,7],[1,8],[1,9],[1,11],[1,12],[1,13],[1,14],[1,18],[1,20],[1,22],[1,32],
+        [2,3],[2,4],[2,8],[2,14],[2,18],[2,20],[2,22],[2,31],
+        [3,4],[3,8],[3,9],[3,10],[3,14],[3,28],[3,29],[3,33],
+        [4,8],[4,13],[4,14],[4,20],[4,22],[4,30],
+        [5,7],[5,11],[6,7],[6,11],[6,17],
+        [7,17],
+        [9,10],[9,33],
+        [10,34],
+        [14,34],
+        [15,33],
+        [16,33],
+        [19,33],
+        [21,33],
+        [23,33],
+        [24,26],[24,28],
+        [25,26],[25,28],
+        [26,32],
+        [27,30],[27,34],
+        [28,34],
+        [29,32],[29,34],
+        [30,33],[30,34],
+        [31,33],
+        [32,33],[32,34],
+        [33,34]
+      ];
+      const edges = edgesList.map(([s,t], i) => ({ data: { id: 'e'+i, source: String(s), target: String(t) } }));
+      return { elements: [...nodes, ...edges] };
+    }
+
+    function setDirected(flag) {
+      isDirected = !!flag;
+      document.getElementById('dir').textContent = 'tipo: ' + (isDirected ? 'dirigido' : 'no dirigido');
+      cy.style().selector('edge').style('target-arrow-shape', isDirected ? 'triangle' : 'none').update();
+    }
+
+    cy.on('add remove', elsCount);
+    const resizeObserver = new ResizeObserver(() => cy.resize());
+    resizeObserver.observe(document.getElementById('graph'));
+
+    // Inicial: layout COSE y etiquetas segun toggles
+    cy.ready(() => {
+      runLayout('cose');
+      recomputeLabels();
+      applySizes();
+    });
+  </script>
+</body>
+</html>
